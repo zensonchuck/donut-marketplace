@@ -1,0 +1,13 @@
+{
+  "name": "donut-marketplace",
+  "version": "1.0.0",
+  "description": "Live P2P Marketplace for DonutSMP Economy",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2"
+  }
+}
