@@ -1,12 +1,14 @@
 const express = require("express");
 const http = require("http");
-const { Server } = require("socket.io");
-const fs = require("fs");
 const path = require("path");
+const fs = require("fs");
 const crypto = require("crypto");
+const readline = require("readline");
 
 const app = express();
 const server = http.createServer(app);
+
+const { Server } = require("socket.io");
 
 const io = new Server(server, {
   cors: {
@@ -15,102 +17,225 @@ const io = new Server(server, {
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
-// --------------------------------------------------
-// FILE STORAGE
-// --------------------------------------------------
+// ============================================================
+// CONFIGURATION
+// ============================================================
 
 const DATA_DIR = path.join(__dirname, "data");
-const ORDERS_FILE = path.join(DATA_DIR, "orders.json");
+
+const USERS_FILE = path.join(DATA_DIR, "users.json");
+const LISTINGS_FILE = path.join(DATA_DIR, "listings.json");
+const FUNDING_FILE = path.join(DATA_DIR, "funding.json");
+const TRADES_FILE = path.join(DATA_DIR, "trades.json");
+
+const SESSION_LENGTH = 1000 * 60 * 60 * 24 * 7; // 7 days
+const OWNER_SESSION_LENGTH = 1000 * 60 * 60 * 4; // 4 hours
+
+const sessions = new Map();
+const ownerSessions = new Map();
+
+// ============================================================
+// SECURITY
+// ============================================================
+
+// IMPORTANT:
+//
+// Do NOT put the owner password here.
+//
+// The password hash must be stored in the environment variable:
+//
+// OWNER_PASSWORD_HASH
+//
+// Generate the hash with:
+// node make-owner-hash.js
+//
+// Then put the generated hash into Render's environment variables.
+
+const OWNER_PASSWORD_HASH =
+  process.env.OWNER_PASSWORD_HASH || "";
+
+const OWNER_USERNAME =
+  process.env.OWNER_USERNAME || "Baychilly";
+
+const MIDDLEMAN_USERNAME =
+  process.env.MIDDLEMAN_USERNAME || "Baychilly";
+
+// ============================================================
+// APP SETUP
+// ============================================================
+
+app.use(express.json({ limit: "100kb" }));
+app.use(express.urlencoded({ extended: true }));
+
+app.use(express.static(path.join(__dirname, "public")));
+
+// ============================================================
+// DATA STORAGE
+// ============================================================
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-if (!fs.existsSync(ORDERS_FILE)) {
-  fs.writeFileSync(ORDERS_FILE, "[]", "utf8");
-}
-
-// --------------------------------------------------
-// APP CONFIG
-// --------------------------------------------------
-
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-app.use(express.static(path.join(__dirname, "public")));
-
-// --------------------------------------------------
-// DATA
-// --------------------------------------------------
-
-let orders = [];
-const chatHistory = new Map();
-
-function loadOrders() {
-  try {
-    const raw = fs.readFileSync(ORDERS_FILE, "utf8");
-
-    if (!raw.trim()) {
-      orders = [];
-      return;
-    }
-
-    const parsed = JSON.parse(raw);
-
-    if (Array.isArray(parsed)) {
-      orders = parsed;
-    } else {
-      orders = [];
-    }
-
-    console.log(`Loaded ${orders.length} marketplace listings.`);
-  } catch (error) {
-    console.error("Could not load orders.json:", error);
-    orders = [];
+function ensureFile(file) {
+  if (!fs.existsSync(file)) {
+    fs.writeFileSync(file, "[]", "utf8");
   }
 }
 
-function saveOrders() {
+ensureFile(USERS_FILE);
+ensureFile(LISTINGS_FILE);
+ensureFile(FUNDING_FILE);
+ensureFile(TRADES_FILE);
+
+function loadJSON(file) {
   try {
+    const data = fs.readFileSync(file, "utf8");
+
+    if (!data.trim()) {
+      return [];
+    }
+
+    const parsed = JSON.parse(data);
+
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    console.error("Failed to load:", file);
+    console.error(error.message);
+
+    return [];
+  }
+}
+
+function saveJSON(file, data) {
+  try {
+    const temporaryFile = `${file}.tmp`;
+
     fs.writeFileSync(
-      ORDERS_FILE,
-      JSON.stringify(orders, null, 2),
+      temporaryFile,
+      JSON.stringify(data, null, 2),
       "utf8"
     );
+
+    fs.renameSync(temporaryFile, file);
+
+    return true;
   } catch (error) {
-    console.error("Could not save orders.json:", error);
+    console.error("Failed to save:", file);
+    console.error(error.message);
+
+    return false;
   }
 }
 
-loadOrders();
+let users = loadJSON(USERS_FILE);
+let listings = loadJSON(LISTINGS_FILE);
+let fundingRequests = loadJSON(FUNDING_FILE);
+let trades = loadJSON(TRADES_FILE);
 
-// --------------------------------------------------
-// HELPERS
-// --------------------------------------------------
+// ============================================================
+// GENERAL HELPERS
+// ============================================================
 
-function createId() {
-  if (typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-
-  return `${Date.now()}-${Math.random()
-    .toString(36)
-    .slice(2, 12)}`;
+function id() {
+  return crypto.randomUUID();
 }
 
-function cleanString(value, maxLength = 200) {
-  if (value === undefined || value === null) {
+function clean(value, max = 200) {
+  if (
+    value === undefined ||
+    value === null
+  ) {
     return "";
   }
 
   return String(value)
     .trim()
-    .slice(0, maxLength);
+    .slice(0, max);
 }
 
-function cleanPrice(value) {
+function normalizeUsername(username) {
+  return clean(username, 24)
+    .replace(/[^a-zA-Z0-9_]/g, "");
+}
+
+function validUsername(username) {
+  return (
+    username.length >= 3 &&
+    username.length <= 24
+  );
+}
+
+function validPassword(password) {
+  return (
+    typeof password === "string" &&
+    password.length >= 6 &&
+    password.length <= 200
+  );
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(32);
+
+  const derivedKey = crypto.scryptSync(
+    password,
+    salt,
+    64,
+    {
+      N: 16384,
+      r: 8,
+      p: 1
+    }
+  );
+
+  return [
+    salt.toString("hex"),
+    derivedKey.toString("hex")
+  ].join(":");
+}
+
+function verifyPassword(password, storedHash) {
+  try {
+    if (!password || !storedHash) {
+      return false;
+    }
+
+    const parts = storedHash.split(":");
+
+    if (parts.length !== 2) {
+      return false;
+    }
+
+    const salt = Buffer.from(parts[0], "hex");
+    const expected = Buffer.from(parts[1], "hex");
+
+    const actual = crypto.scryptSync(
+      password,
+      salt,
+      expected.length,
+      {
+        N: 16384,
+        r: 8,
+        p: 1
+      }
+    );
+
+    if (actual.length !== expected.length) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(
+      actual,
+      expected
+    );
+  } catch {
+    return false;
+  }
+}
+
+function cleanNumber(value) {
   const number = Number(value);
 
   if (!Number.isFinite(number)) {
@@ -121,651 +246,1402 @@ function cleanPrice(value) {
     return null;
   }
 
-  return Math.round(number * 100) / 100;
-}
-
-function cleanQuantity(value) {
-  if (value === undefined || value === null || value === "") {
-    return 1;
-  }
-
-  const number = Number(value);
-
-  if (!Number.isFinite(number)) {
-    return null;
-  }
-
-  if (number <= 0) {
-    return null;
-  }
-
   return Math.floor(number);
 }
 
-function broadcastOrders() {
-  // Main/current event.
-  io.emit("orders_updated", orders);
-
-  // Compatibility events for different versions
-  // of the marketplace frontend.
-  io.emit("orders", orders);
-  io.emit("order_list", orders);
-  io.emit("market_data", orders);
-}
-
-function sendInitialOrders(socket) {
-  socket.emit("init_orders", orders);
-  socket.emit("initial_orders", orders);
-  socket.emit("orders", orders);
-  socket.emit("order_list", orders);
-  socket.emit("market_data", orders);
-  socket.emit("orders_updated", orders);
-
-  socket.emit("market_status", {
-    online: true,
-    listings: orders.length,
-    timestamp: Date.now()
-  });
-}
-
-function normalizeOrder(data = {}, socket = null) {
-  const type =
-    cleanString(
-      data.type ||
-      data.orderType ||
-      data.side ||
-      "sell",
-      20
-    ).toLowerCase();
-
-  const seller =
-    cleanString(
-      data.seller ||
-      data.username ||
-      data.player ||
-      data.owner ||
-      (socket && socket.username) ||
-      "Unknown",
-      40
-    );
-
-  const item = cleanString(
-    data.item ||
-    data.itemName ||
-    data.name ||
-    data.product,
-    100
-  );
-
-  const price = cleanPrice(
-    data.price ||
-    data.amount ||
-    data.cost
-  );
-
-  const quantity = cleanQuantity(
-    data.quantity ||
-    data.qty ||
-    1
-  );
-
-  const note = cleanString(
-    data.note ||
-    data.description ||
-    data.message ||
-    "",
-    500
-  );
-
-  if (!item) {
-    return {
-      error: "Item name is required."
-    };
-  }
-
-  if (price === null) {
-    return {
-      error: "A valid price is required."
-    };
-  }
-
-  if (quantity === null) {
-    return {
-      error: "Quantity must be a positive whole number."
-    };
-  }
-
-  if (!["sell", "buy", "sale", "purchase"].includes(type)) {
-    return {
-      error: "Listing type must be buy or sell."
-    };
-  }
-
-  const normalizedType =
-    type === "sale" ? "sell" :
-    type === "purchase" ? "buy" :
-    type;
-
+function publicUser(user) {
   return {
-    id: createId(),
-
-    type: normalizedType,
-
-    seller,
-
-    username: seller,
-
-    item,
-
-    itemName: item,
-
-    price,
-
-    quantity,
-
-    qty: quantity,
-
-    note,
-
-    description: note,
-
-    createdAt: Date.now(),
-
-    timestamp: Date.now()
+    id: user.id,
+    username: user.username,
+    balance: user.balance,
+    createdAt: user.createdAt
   };
 }
 
-// --------------------------------------------------
-// HEALTH / API
-// --------------------------------------------------
+// ============================================================
+// SESSION HELPERS
+// ============================================================
+
+function createSession(userId) {
+  const token = crypto.randomBytes(48).toString("hex");
+
+  sessions.set(token, {
+    userId,
+    expires: Date.now() + SESSION_LENGTH
+  });
+
+  return token;
+}
+
+function getUserFromToken(token) {
+  if (!token) {
+    return null;
+  }
+
+  const session = sessions.get(token);
+
+  if (!session) {
+    return null;
+  }
+
+  if (session.expires < Date.now()) {
+    sessions.delete(token);
+    return null;
+  }
+
+  const user = users.find(
+    user => user.id === session.userId
+  );
+
+  if (!user) {
+    sessions.delete(token);
+    return null;
+  }
+
+  return user;
+}
+
+function createOwnerSession() {
+  const token = crypto.randomBytes(64).toString("hex");
+
+  ownerSessions.set(token, {
+    expires:
+      Date.now() + OWNER_SESSION_LENGTH
+  });
+
+  return token;
+}
+
+function isOwnerToken(token) {
+  if (!token) {
+    return false;
+  }
+
+  const session = ownerSessions.get(token);
+
+  if (!session) {
+    return false;
+  }
+
+  if (session.expires < Date.now()) {
+    ownerSessions.delete(token);
+    return false;
+  }
+
+  return true;
+}
+
+function getToken(req) {
+  const header =
+    req.headers.authorization || "";
+
+  if (!header.startsWith("Bearer ")) {
+    return null;
+  }
+
+  return header.slice(7);
+}
+
+function requireUser(req, res, next) {
+  const token = getToken(req);
+  const user = getUserFromToken(token);
+
+  if (!user) {
+    return res.status(401).json({
+      success: false,
+      error: "You must be signed in."
+    });
+  }
+
+  req.user = user;
+  req.token = token;
+
+  next();
+}
+
+function requireOwner(req, res, next) {
+  const token =
+    req.headers["x-owner-token"];
+
+  if (!isOwnerToken(token)) {
+    return res.status(403).json({
+      success: false,
+      error: "Owner authorization required."
+    });
+  }
+
+  next();
+}
+
+// ============================================================
+// HEALTH
+// ============================================================
 
 app.get("/health", (req, res) => {
   res.json({
-    status: "ok",
+    success: true,
     online: true,
-    listings: orders.length,
-    timestamp: Date.now()
+    service: "Donut Spawner Market",
+    users: users.length,
+    listings: listings.length,
+    trades: trades.length
   });
 });
 
-app.get("/api/orders", (req, res) => {
-  res.json(orders);
+// ============================================================
+// AUTHENTICATION
+// ============================================================
+
+// CREATE ACCOUNT
+
+app.post("/api/auth/register", (req, res) => {
+  const username =
+    normalizeUsername(req.body.username);
+
+  const password =
+    req.body.password;
+
+  if (!validUsername(username)) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Username must be 3-24 letters, numbers, or underscores."
+    });
+  }
+
+  if (!validPassword(password)) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Password must contain at least 6 characters."
+    });
+  }
+
+  const exists = users.some(
+    user =>
+      user.username.toLowerCase() ===
+      username.toLowerCase()
+  );
+
+  if (exists) {
+    return res.status(409).json({
+      success: false,
+      error: "That username is already taken."
+    });
+  }
+
+  const user = {
+    id: id(),
+
+    username,
+
+    passwordHash:
+      hashPassword(password),
+
+    balance: 0,
+
+    createdAt: Date.now()
+  };
+
+  users.push(user);
+
+  saveJSON(USERS_FILE, users);
+
+  const token = createSession(user.id);
+
+  res.json({
+    success: true,
+
+    token,
+
+    user: publicUser(user)
+  });
 });
 
-app.get("/api/listings", (req, res) => {
-  res.json(orders);
+// LOGIN
+
+app.post("/api/auth/login", (req, res) => {
+  const username =
+    normalizeUsername(req.body.username);
+
+  const password =
+    req.body.password;
+
+  const user = users.find(
+    item =>
+      item.username.toLowerCase() ===
+      username.toLowerCase()
+  );
+
+  if (
+    !user ||
+    !verifyPassword(
+      password,
+      user.passwordHash
+    )
+  ) {
+    return res.status(401).json({
+      success: false,
+      error: "Invalid username or password."
+    });
+  }
+
+  const token = createSession(user.id);
+
+  res.json({
+    success: true,
+
+    token,
+
+    user: publicUser(user)
+  });
 });
 
-// --------------------------------------------------
-// SOCKET.IO CONNECTION
-// --------------------------------------------------
+// CURRENT USER
 
-io.on("connection", (socket) => {
-  console.log(`Socket connected: ${socket.id}`);
-
-  socket.username = "Unknown";
-
-  // ----------------------------------------------
-  // USERNAME
-  // ----------------------------------------------
-
-  socket.on("set_username", (username) => {
-    const cleaned = cleanString(username, 40);
-
-    if (cleaned) {
-      socket.username = cleaned;
-
-      socket.emit("username_set", {
-        username: cleaned
-      });
-    }
-  });
-
-  socket.on("username", (username) => {
-    const cleaned = cleanString(username, 40);
-
-    if (cleaned) {
-      socket.username = cleaned;
-    }
-  });
-
-  // ----------------------------------------------
-  // SEND INITIAL MARKET DATA
-  // ----------------------------------------------
-
-  sendInitialOrders(socket);
-
-  // ----------------------------------------------
-  // CREATE LISTING
-  // ----------------------------------------------
-
-  socket.on("place_order", (data = {}) => {
-    console.log("place_order received:", data);
-
-    const listing = normalizeOrder(data, socket);
-
-    if (listing.error) {
-      console.log("Invalid listing:", listing.error);
-
-      socket.emit("order_error", {
-        success: false,
-        error: listing.error,
-        message: listing.error
-      });
-
-      socket.emit("listing_error", {
-        success: false,
-        error: listing.error,
-        message: listing.error
-      });
-
-      return;
-    }
-
-    orders.push(listing);
-
-    saveOrders();
-
-    console.log(
-      `New listing: ${listing.item} - ${listing.price} by ${listing.seller}`
-    );
-
-    // Tell the person who created it.
-    socket.emit("order_created", listing);
-
-    socket.emit("listing_created", listing);
-
-    socket.emit("listing_success", {
+app.get(
+  "/api/auth/me",
+  requireUser,
+  (req, res) => {
+    res.json({
       success: true,
-      order: listing,
-      listing
+      user: publicUser(req.user)
     });
+  }
+);
 
-    // Tell every connected player.
-    io.emit("new_order", listing);
+// LOGOUT
 
-    io.emit("new_order_placed", listing);
+app.post(
+  "/api/auth/logout",
+  requireUser,
+  (req, res) => {
+    sessions.delete(req.token);
 
-    io.emit("order_created", listing);
+    res.json({
+      success: true
+    });
+  }
+);
 
-    // Send complete updated list too.
-    broadcastOrders();
-  });
+// ============================================================
+// OWNER AUTHENTICATION
+// ============================================================
 
-  // ----------------------------------------------
-  // ALTERNATIVE CREATE LISTING EVENTS
-  // ----------------------------------------------
+// OWNER LOGIN
 
-  socket.on("create_listing", (data = {}) => {
-    console.log("create_listing received.");
+app.post(
+  "/api/owner/login",
+  (req, res) => {
+    const password =
+      req.body.password;
 
-    const listing = normalizeOrder(data, socket);
+    // If OWNER_PASSWORD_HASH has not been configured,
+    // owner access is disabled completely.
 
-    if (listing.error) {
-      socket.emit("order_error", {
+    if (!OWNER_PASSWORD_HASH) {
+      return res.status(503).json({
         success: false,
-        error: listing.error,
-        message: listing.error
+        error:
+          "Owner authentication has not been configured."
       });
-
-      return;
     }
-
-    orders.push(listing);
-
-    saveOrders();
-
-    socket.emit("order_created", listing);
-    socket.emit("listing_created", listing);
-
-    io.emit("new_order", listing);
-    io.emit("new_order_placed", listing);
-
-    broadcastOrders();
-  });
-
-  socket.on("new_listing", (data = {}) => {
-    console.log("new_listing received.");
-
-    const listing = normalizeOrder(data, socket);
-
-    if (listing.error) {
-      socket.emit("order_error", {
-        success: false,
-        error: listing.error,
-        message: listing.error
-      });
-
-      return;
-    }
-
-    orders.push(listing);
-
-    saveOrders();
-
-    socket.emit("order_created", listing);
-    socket.emit("listing_created", listing);
-
-    io.emit("new_order", listing);
-    io.emit("new_order_placed", listing);
-
-    broadcastOrders();
-  });
-
-  // ----------------------------------------------
-  // REMOVE LISTING
-  // ----------------------------------------------
-
-  socket.on("remove_order", (data = {}) => {
-    const id =
-      typeof data === "string"
-        ? data
-        : data.id ||
-          data.orderId ||
-          data.listingId;
-
-    if (!id) {
-      socket.emit("order_error", {
-        success: false,
-        error: "Listing ID is required."
-      });
-
-      return;
-    }
-
-    const index = orders.findIndex(
-      (order) => String(order.id) === String(id)
-    );
-
-    if (index === -1) {
-      socket.emit("order_error", {
-        success: false,
-        error: "Listing was not found."
-      });
-
-      return;
-    }
-
-    const removed = orders[index];
-
-    // Only the owner should be able to remove their listing
-    // when a username is available.
-    const requestingUser = cleanString(
-      socket.username,
-      40
-    );
 
     if (
-      requestingUser &&
-      requestingUser !== "Unknown" &&
-      removed.seller &&
-      removed.seller !== requestingUser
+      typeof password !== "string" ||
+      !verifyPassword(
+        password,
+        OWNER_PASSWORD_HASH
+      )
     ) {
-      socket.emit("order_error", {
+      return res.status(403).json({
         success: false,
-        error: "You can only remove your own listings."
+        error: "Incorrect owner password."
       });
-
-      return;
     }
 
-    orders.splice(index, 1);
+    const token =
+      createOwnerSession();
 
-    saveOrders();
+    res.json({
+      success: true,
+      token,
+      username: OWNER_USERNAME
+    });
+  }
+);
 
-    socket.emit("order_removed", removed);
+// OWNER LOGOUT
 
-    io.emit("order_removed", removed);
+app.post(
+  "/api/owner/logout",
+  requireOwner,
+  (req, res) => {
+    const token =
+      req.headers["x-owner-token"];
 
-    broadcastOrders();
-  });
+    ownerSessions.delete(token);
 
-  // ----------------------------------------------
-  // DELETE LISTING
-  // ----------------------------------------------
+    res.json({
+      success: true
+    });
+  }
+);
 
-  socket.on("delete_listing", (data = {}) => {
-    const id =
-      typeof data === "string"
-        ? data
-        : data.id ||
-          data.orderId ||
-          data.listingId;
+// OWNER STATUS
 
-    if (!id) {
-      return;
-    }
+app.get(
+  "/api/owner/status",
+  requireOwner,
+  (req, res) => {
+    res.json({
+      success: true,
+      owner: OWNER_USERNAME
+    });
+  }
+);
 
-    const index = orders.findIndex(
-      (order) => String(order.id) === String(id)
-    );
+// ============================================================
+// USER BALANCE
+// ============================================================
 
-    if (index === -1) {
-      return;
-    }
+app.get(
+  "/api/account",
+  requireUser,
+  (req, res) => {
+    res.json({
+      success: true,
+      user: publicUser(req.user)
+    });
+  }
+);
 
-    const removed = orders[index];
+// ============================================================
+// FUNDING REQUESTS
+// ============================================================
 
-    const requestingUser = cleanString(
-      socket.username,
-      40
-    );
+app.post(
+  "/api/funding/request",
+  requireUser,
+  (req, res) => {
+    const amount =
+      cleanNumber(req.body.amount);
 
     if (
-      requestingUser &&
-      requestingUser !== "Unknown" &&
-      removed.seller &&
-      removed.seller !== requestingUser
+      amount === null ||
+      amount <= 0
     ) {
-      return;
+      return res.status(400).json({
+        success: false,
+        error: "Enter a valid amount."
+      });
     }
 
-    orders.splice(index, 1);
-
-    saveOrders();
-
-    io.emit("order_removed", removed);
-
-    broadcastOrders();
-  });
-
-  // ----------------------------------------------
-  // REFRESH MARKET
-  // ----------------------------------------------
-
-  socket.on("request_orders", () => {
-    sendInitialOrders(socket);
-  });
-
-  socket.on("get_orders", () => {
-    sendInitialOrders(socket);
-  });
-
-  socket.on("refresh_market", () => {
-    sendInitialOrders(socket);
-  });
-
-  // ----------------------------------------------
-  // TRADE ROOMS
-  // ----------------------------------------------
-
-  socket.on("join_trade_room", (data = {}) => {
-    const room =
-      typeof data === "string"
-        ? data
-        : data.room ||
-          data.roomId ||
-          data.orderId ||
-          data.listingId;
-
-    if (!room) {
-      return;
+    if (amount > 1000000000) {
+      return res.status(400).json({
+        success: false,
+        error: "Amount is too large."
+      });
     }
 
-    socket.join(String(room));
+    const request = {
+      id: id(),
 
-    const roomId = String(room);
+      userId: req.user.id,
 
-    if (!chatHistory.has(roomId)) {
-      chatHistory.set(roomId, []);
-    }
+      username: req.user.username,
 
-    socket.emit("chat_history", chatHistory.get(roomId));
+      amount,
 
-    socket.emit("trade_room_joined", {
-      room: roomId
-    });
-  });
-
-  socket.on("leave_trade_room", (data = {}) => {
-    const room =
-      typeof data === "string"
-        ? data
-        : data.room ||
-          data.roomId ||
-          data.orderId ||
-          data.listingId;
-
-    if (!room) {
-      return;
-    }
-
-    socket.leave(String(room));
-  });
-
-  // ----------------------------------------------
-  // CHAT HISTORY
-  // ----------------------------------------------
-
-  socket.on("get_chat_history", (data = {}) => {
-    const room =
-      typeof data === "string"
-        ? data
-        : data.room ||
-          data.roomId ||
-          data.orderId ||
-          data.listingId;
-
-    if (!room) {
-      socket.emit("chat_history", []);
-      return;
-    }
-
-    const roomId = String(room);
-
-    socket.emit(
-      "chat_history",
-      chatHistory.get(roomId) || []
-    );
-  });
-
-  // ----------------------------------------------
-  // CHAT MESSAGE
-  // ----------------------------------------------
-
-  socket.on("send_chat_message", (data = {}) => {
-    const room =
-      data.room ||
-      data.roomId ||
-      data.orderId ||
-      data.listingId;
-
-    const message =
-      cleanString(
-        data.message ||
-        data.text ||
-        data.content,
-        1000
-      );
-
-    if (!room || !message) {
-      return;
-    }
-
-    const roomId = String(room);
-
-    const username =
-      cleanString(
-        data.username ||
-        data.sender ||
-        socket.username,
-        40
-      ) || "Unknown";
-
-    const chatMessage = {
-      id: createId(),
-
-      room: roomId,
-
-      username,
-
-      sender: username,
-
-      message,
-
-      text: message,
-
-      timestamp: Date.now(),
+      status: "pending",
 
       createdAt: Date.now()
     };
 
-    if (!chatHistory.has(roomId)) {
-      chatHistory.set(roomId, []);
+    fundingRequests.push(request);
+
+    saveJSON(
+      FUNDING_FILE,
+      fundingRequests
+    );
+
+    res.json({
+      success: true,
+      request
+    });
+  }
+);
+
+// USER'S FUNDING REQUESTS
+
+app.get(
+  "/api/funding/my",
+  requireUser,
+  (req, res) => {
+    res.json({
+      success: true,
+
+      requests:
+        fundingRequests.filter(
+          request =>
+            request.userId ===
+            req.user.id
+        )
+    });
+  }
+);
+
+// ============================================================
+// OWNER: FUND USER
+// ============================================================
+
+app.post(
+  "/api/owner/give-funds",
+  requireOwner,
+  (req, res) => {
+    const username =
+      normalizeUsername(
+        req.body.username
+      );
+
+    const amount =
+      cleanNumber(req.body.amount);
+
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        error: "Username required."
+      });
     }
 
-    const history = chatHistory.get(roomId);
+    if (
+      amount === null ||
+      amount <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "Valid amount required."
+      });
+    }
 
-    history.push(chatMessage);
+    const user = users.find(
+      item =>
+        item.username.toLowerCase() ===
+        username.toLowerCase()
+    );
 
-    // Keep the last 100 messages per room.
-    if (history.length > 100) {
-      history.splice(
-        0,
-        history.length - 100
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found."
+      });
+    }
+
+    user.balance += amount;
+
+    saveJSON(
+      USERS_FILE,
+      users
+    );
+
+    res.json({
+      success: true,
+
+      user: publicUser(user),
+
+      amount
+    });
+  }
+);
+
+// ============================================================
+// OWNER: FUNDING REQUESTS
+// ============================================================
+
+app.get(
+  "/api/owner/funding",
+  requireOwner,
+  (req, res) => {
+    res.json({
+      success: true,
+      requests: fundingRequests
+    });
+  }
+);
+
+// APPROVE FUNDING
+
+app.post(
+  "/api/owner/funding/:id/approve",
+  requireOwner,
+  (req, res) => {
+    const request =
+      fundingRequests.find(
+        item =>
+          item.id === req.params.id
+      );
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        error: "Funding request not found."
+      });
+    }
+
+    if (
+      request.status !== "pending"
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "Request has already been processed."
+      });
+    }
+
+    const user = users.find(
+      item =>
+        item.id === request.userId
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: "User no longer exists."
+      });
+    }
+
+    user.balance += request.amount;
+
+    request.status = "approved";
+
+    request.approvedAt = Date.now();
+
+    saveJSON(
+      USERS_FILE,
+      users
+    );
+
+    saveJSON(
+      FUNDING_FILE,
+      fundingRequests
+    );
+
+    res.json({
+      success: true,
+      user: publicUser(user)
+    });
+  }
+);
+
+// DENY FUNDING
+
+app.post(
+  "/api/owner/funding/:id/deny",
+  requireOwner,
+  (req, res) => {
+    const request =
+      fundingRequests.find(
+        item =>
+          item.id === req.params.id
+      );
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        error: "Funding request not found."
+      });
+    }
+
+    if (
+      request.status !== "pending"
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "Request has already been processed."
+      });
+    }
+
+    request.status = "denied";
+
+    request.deniedAt = Date.now();
+
+    saveJSON(
+      FUNDING_FILE,
+      fundingRequests
+    );
+
+    res.json({
+      success: true
+    });
+  }
+);
+
+// ============================================================
+// SPAWNER MARKETPLACE
+// ============================================================
+
+app.get(
+  "/api/spawners",
+  (req, res) => {
+    res.json({
+      success: true,
+      listings
+    });
+  }
+);
+
+// CREATE SPAWNER LISTING
+
+app.post(
+  "/api/spawners",
+  requireUser,
+  (req, res) => {
+    const spawnerType =
+      clean(
+        req.body.spawnerType ||
+        req.body.item ||
+        req.body.type,
+        80
+      );
+
+    const price =
+      cleanNumber(req.body.price);
+
+    const quantity =
+      cleanNumber(
+        req.body.quantity || 1
+      );
+
+    if (!spawnerType) {
+      return res.status(400).json({
+        success: false,
+        error: "Spawner type is required."
+      });
+    }
+
+    if (
+      price === null ||
+      price <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "Enter a valid price."
+      });
+    }
+
+    if (
+      quantity === null ||
+      quantity <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "Enter a valid quantity."
+      });
+    }
+
+    const listing = {
+      id: id(),
+
+      sellerId: req.user.id,
+
+      seller:
+        req.user.username,
+
+      spawnerType,
+
+      quantity,
+
+      price,
+
+      status: "active",
+
+      createdAt: Date.now()
+    };
+
+    listings.push(listing);
+
+    saveJSON(
+      LISTINGS_FILE,
+      listings
+    );
+
+    io.emit(
+      "spawner_listing_created",
+      listing
+    );
+
+    io.emit(
+      "listings_updated",
+      listings
+    );
+
+    res.json({
+      success: true,
+      listing
+    });
+  }
+);
+
+// ============================================================
+// REMOVE OWN LISTING
+// ============================================================
+
+app.delete(
+  "/api/spawners/:id",
+  requireUser,
+  (req, res) => {
+    const index =
+      listings.findIndex(
+        listing =>
+          listing.id ===
+          req.params.id
+      );
+
+    if (index === -1) {
+      return res.status(404).json({
+        success: false,
+        error: "Listing not found."
+      });
+    }
+
+    const listing =
+      listings[index];
+
+    if (
+      listing.sellerId !==
+      req.user.id
+    ) {
+      return res.status(403).json({
+        success: false,
+        error:
+          "You can only remove your own listings."
+      });
+    }
+
+    if (
+      listing.status !== "active"
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "This listing cannot be removed right now."
+      });
+    }
+
+    listings.splice(index, 1);
+
+    saveJSON(
+      LISTINGS_FILE,
+      listings
+    );
+
+    io.emit(
+      "spawner_listing_removed",
+      listing.id
+    );
+
+    io.emit(
+      "listings_updated",
+      listings
+    );
+
+    res.json({
+      success: true
+    });
+  }
+);
+
+// ============================================================
+// OWNER: REMOVE ANY LISTING
+// ============================================================
+
+app.delete(
+  "/api/owner/spawners/:id",
+  requireOwner,
+  (req, res) => {
+    const index =
+      listings.findIndex(
+        listing =>
+          listing.id ===
+          req.params.id
+      );
+
+    if (index === -1) {
+      return res.status(404).json({
+        success: false,
+        error: "Listing not found."
+      });
+    }
+
+    const removed =
+      listings.splice(index, 1)[0];
+
+    saveJSON(
+      LISTINGS_FILE,
+      listings
+    );
+
+    io.emit(
+      "spawner_listing_removed",
+      removed.id
+    );
+
+    io.emit(
+      "listings_updated",
+      listings
+    );
+
+    res.json({
+      success: true
+    });
+  }
+);
+
+// ============================================================
+// BUY SPAWNER
+// ============================================================
+
+app.post(
+  "/api/spawners/:id/buy",
+  requireUser,
+  (req, res) => {
+    const listing =
+      listings.find(
+        item =>
+          item.id ===
+          req.params.id
+      );
+
+    if (!listing) {
+      return res.status(404).json({
+        success: false,
+        error: "Listing not found."
+      });
+    }
+
+    if (
+      listing.status !== "active"
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "This listing is no longer available."
+      });
+    }
+
+    if (
+      listing.sellerId ===
+      req.user.id
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "You cannot buy your own listing."
+      });
+    }
+
+    if (
+      req.user.balance <
+      listing.price
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "Insufficient balance."
+      });
+    }
+
+    // Lock the listing immediately.
+    listing.status =
+      "escrow";
+
+    // Remove coins from buyer.
+    req.user.balance -=
+      listing.price;
+
+    const trade = {
+      id: id(),
+
+      listingId:
+        listing.id,
+
+      buyerId:
+        req.user.id,
+
+      buyer:
+        req.user.username,
+
+      sellerId:
+        listing.sellerId,
+
+      seller:
+        listing.seller,
+
+      spawnerType:
+        listing.spawnerType,
+
+      quantity:
+        listing.quantity,
+
+      price:
+        listing.price,
+
+      status:
+        "awaiting_middleman",
+
+      middleman:
+        MIDDLEMAN_USERNAME,
+
+      createdAt:
+        Date.now()
+    };
+
+    trades.push(trade);
+
+    saveJSON(
+      USERS_FILE,
+      users
+    );
+
+    saveJSON(
+      LISTINGS_FILE,
+      listings
+    );
+
+    saveJSON(
+      TRADES_FILE,
+      trades
+    );
+
+    io.emit(
+      "spawner_trade_created",
+      trade
+    );
+
+    io.emit(
+      "listings_updated",
+      listings
+    );
+
+    res.json({
+      success: true,
+
+      message:
+        "Purchase started. Funds are being held in escrow.",
+
+      trade,
+
+      user:
+        publicUser(req.user)
+    });
+  }
+);
+
+// ============================================================
+// USER TRADES
+// ============================================================
+
+app.get(
+  "/api/trades",
+  requireUser,
+  (req, res) => {
+    res.json({
+      success: true,
+
+      trades:
+        trades.filter(
+          trade =>
+            trade.buyerId ===
+              req.user.id ||
+            trade.sellerId ===
+              req.user.id
+        )
+    });
+  }
+);
+
+// ============================================================
+// OWNER: ALL TRADES
+// ============================================================
+
+app.get(
+  "/api/owner/trades",
+  requireOwner,
+  (req, res) => {
+    res.json({
+      success: true,
+      trades
+    });
+  }
+);
+
+// ============================================================
+// MIDDLEMAN: RECEIVED SPAWNER
+// ============================================================
+
+app.post(
+  "/api/trades/:id/middleman-received",
+  requireOwner,
+  (req, res) => {
+    const trade =
+      trades.find(
+        item =>
+          item.id ===
+          req.params.id
+      );
+
+    if (!trade) {
+      return res.status(404).json({
+        success: false,
+        error: "Trade not found."
+      });
+    }
+
+    if (
+      trade.status !==
+      "awaiting_middleman"
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Trade is not waiting for the middleman."
+      });
+    }
+
+    trade.status =
+      "middleman_received";
+
+    trade.middlemanReceivedAt =
+      Date.now();
+
+    saveJSON(
+      TRADES_FILE,
+      trades
+    );
+
+    io.emit(
+      "trade_updated",
+      trade
+    );
+
+    res.json({
+      success: true,
+      trade
+    });
+  }
+);
+
+// ============================================================
+// MIDDLEMAN: ITEM DELIVERED
+// ============================================================
+
+app.post(
+  "/api/trades/:id/item-delivered",
+  requireOwner,
+  (req, res) => {
+    const trade =
+      trades.find(
+        item =>
+          item.id ===
+          req.params.id
+      );
+
+    if (!trade) {
+      return res.status(404).json({
+        success: false,
+        error: "Trade not found."
+      });
+    }
+
+    if (
+      trade.status !==
+      "middleman_received"
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "The middleman must confirm receipt first."
+      });
+    }
+
+    trade.status =
+      "item_delivered";
+
+    trade.itemDeliveredAt =
+      Date.now();
+
+    saveJSON(
+      TRADES_FILE,
+      trades
+    );
+
+    io.emit(
+      "trade_updated",
+      trade
+    );
+
+    res.json({
+      success: true,
+      trade
+    });
+  }
+);
+
+// ============================================================
+// MIDDLEMAN: RELEASE PAYMENT
+// ============================================================
+
+app.post(
+  "/api/trades/:id/release",
+  requireOwner,
+  (req, res) => {
+    const trade =
+      trades.find(
+        item =>
+          item.id ===
+          req.params.id
+      );
+
+    if (!trade) {
+      return res.status(404).json({
+        success: false,
+        error: "Trade not found."
+      });
+    }
+
+    if (
+      trade.status !==
+      "item_delivered"
+    ) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "The item must be confirmed as delivered first."
+      });
+    }
+
+    const seller =
+      users.find(
+        user =>
+          user.id ===
+          trade.sellerId
+      );
+
+    if (!seller) {
+      return res.status(404).json({
+        success: false,
+        error:
+          "Seller account not found."
+      });
+    }
+
+    // RELEASE ESCROW TO SELLER
+
+    seller.balance +=
+      trade.price;
+
+    trade.status =
+      "completed";
+
+    trade.completedAt =
+      Date.now();
+
+    saveJSON(
+      USERS_FILE,
+      users
+    );
+
+    saveJSON(
+      TRADES_FILE,
+      trades
+    );
+
+    // Remove the listing.
+    const listingIndex =
+      listings.findIndex(
+        listing =>
+          listing.id ===
+          trade.listingId
+      );
+
+    if (listingIndex !== -1) {
+      listings.splice(
+        listingIndex,
+        1
       );
     }
 
-    io.to(roomId).emit(
-      "receive_chat_message",
-      chatMessage
+    saveJSON(
+      LISTINGS_FILE,
+      listings
     );
 
-    io.to(roomId).emit(
-      "chat_message",
-      chatMessage
+    io.emit(
+      "trade_completed",
+      trade
     );
-  });
 
-  // ----------------------------------------------
-  // DISCONNECT
-  // ----------------------------------------------
-
-  socket.on("disconnect", (reason) => {
-    console.log(
-      `Socket disconnected: ${socket.id} (${reason})`
+    io.emit(
+      "listings_updated",
+      listings
     );
-  });
-});
 
-// --------------------------------------------------
-// FALLBACK FOR FRONTEND
-// --------------------------------------------------
+    res.json({
+      success: true,
 
-app.get("*", (req, res) => {
-  res.sendFile(
-    path.join(__dirname, "public", "index.html")
+      trade,
+
+      seller:
+        publicUser(seller)
+    });
+  }
+);
+
+// ============================================================
+// OWNER: USERS
+// ============================================================
+
+app.get(
+  "/api/owner/users",
+  requireOwner,
+  (req, res) => {
+    res.json({
+      success: true,
+
+      users:
+        users.map(
+          publicUser
+        )
+    });
+  }
+);
+
+// ============================================================
+// SOCKET.IO
+// ============================================================
+
+io.on("connection", socket => {
+  console.log(
+    "Socket connected:",
+    socket.id
+  );
+
+  socket.emit(
+    "spawner_market_snapshot",
+    listings
+  );
+
+  socket.emit(
+    "listings_updated",
+    listings
+  );
+
+  socket.on(
+    "get_spawner_listings",
+    () => {
+      socket.emit(
+        "spawner_market_snapshot",
+        listings
+      );
+    }
+  );
+
+  socket.on(
+    "request_market",
+    () => {
+      socket.emit(
+        "spawner_market_snapshot",
+        listings
+      );
+    }
+  );
+
+  socket.on(
+    "join_trade_room",
+    data => {
+      const room =
+        typeof data === "string"
+          ? data
+          : data?.tradeId ||
+            data?.orderId ||
+            data?.roomId;
+
+      if (!room) {
+        return;
+      }
+
+      socket.join(
+        String(room)
+      );
+    }
+  );
+
+  socket.on(
+    "disconnect",
+    () => {
+      console.log(
+        "Socket disconnected:",
+        socket.id
+      );
+    }
   );
 });
 
-// --------------------------------------------------
-// START SERVER
-// --------------------------------------------------
+// ============================================================
+// FRONTEND FALLBACK
+// ============================================================
 
-server.listen(PORT, () => {
-  console.log("----------------------------------------");
-  console.log("Donut Marketplace server started");
-  console.log(`Port: ${PORT}`);
-  console.log(`Listings loaded: ${orders.length}`);
-  console.log("----------------------------------------");
+app.get("*", (req, res) => {
+  res.sendFile(
+    path.join(
+      __dirname,
+      "public",
+      "index.html"
+    )
+  );
 });
+
+// ============================================================
+// START
+// ============================================================
+
+server.listen(
+  PORT,
+  () => {
+    console.log(
+      "=========================================="
+    );
+
+    console.log(
+      "DONUT SPAWNER MARKET"
+    );
+
+    console.log(
+      `Port: ${PORT}`
+    );
+
+    console.log(
+      `Users: ${users.length}`
+    );
+
+    console.log(
+      `Listings: ${listings.length}`
+    );
+
+    console.log(
+      `Owner: ${OWNER_USERNAME}`
+    );
+
+    if (!OWNER_PASSWORD_HASH) {
+      console.log(
+        "WARNING: OWNER_PASSWORD_HASH IS NOT SET"
+      );
+    } else {
+      console.log(
+        "Owner password: securely hashed"
+      );
+    }
+
+    console.log(
+      "=========================================="
+    );
+  }
+);
