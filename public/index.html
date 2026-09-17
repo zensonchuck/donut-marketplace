@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DonutMarket - Real-Time Live Order Exchange</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0c0a09; }
+    ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-order { animation: slideDown 0.3s cubic-bezier(0, 0, 0.2, 1) forwards; }
+  </style>
+</head>
+<body class="bg-stone-950 text-stone-100 font-sans min-h-screen flex flex-col selection:bg-amber-500 selection:text-stone-950">
+
+  <!-- TOP NAVIGATION HEADER -->
+  <header class="bg-stone-900/90 border-b border-stone-800/80 backdrop-blur-md sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex flex-col sm:flex-row justify-between items-center gap-4">
+      <div class="flex items-center space-x-3">
+        <div class="bg-amber-500/10 p-2 rounded-xl border border-amber-500/20 text-2xl">🍩</div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="text-xl font-extrabold text-amber-500 uppercase tracking-wider">DonutMarket</h1>
+            <span id="connection-status" class="bg-amber-500/10 text-amber-400 border border-amber-500/30 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+              <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span> Connecting...
+            </span>
+          </div>
+          <p class="text-xs text-stone-400">Live Player-to-Player Economy Hub</p>
+        </div>
+      </div>
+      
+      <div class="flex items-center space-x-3 w-full sm:w-auto justify-end">
+        <button onclick="openModal('create')" class="bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold px-4 py-2 rounded-xl text-xs transition shadow-lg shadow-amber-500/10 active:scale-95 flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+          Post Live Listing
+        </button>
+        <div class="bg-stone-900 border border-stone-800 px-3 py-1.5 rounded-xl text-xs flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+          <span class="text-stone-400">Account: <strong id="user-display" class="text-amber-400 font-mono">...</strong></span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN WRAPPER -->
+  <div class="max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-3 gap-6 p-4 sm:p-6 flex-grow">
+    
+    <!-- LEFT 2 COLUMNS: CATALOG & LIVE SEARCH -->
+    <main class="lg:col-span-2 space-y-5">
+      
+      <!-- SEARCH & CATEGORY BAR -->
+      <div class="bg-stone-900 border border-stone-800 p-3.5 rounded-2xl space-y-3">
+        <div class="relative">
+          <svg class="w-4 h-4 absolute left-3.5 top-3.5 text-stone-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <input type="text" id="search-input" oninput="filterCatalog()" placeholder="Search item catalog (e.g., Elytra, Spawner, Dragon Head)..." class="w-full bg-stone-950 border border-stone-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-stone-200 placeholder-stone-500 focus:outline-none focus:border-amber-500/60 transition">
+        </div>
+        
+        <div class="flex items-center gap-2 overflow-x-auto pb-1 text-xs" id="category-filters">
+          <button onclick="setCategory('All')" class="cat-btn bg-amber-500 text-stone-950 font-bold px-3 py-1.5 rounded-lg whitespace-nowrap transition">All Items</button>
+          <button onclick="setCategory('Combat')" class="cat-btn bg-stone-950 text-stone-400 hover:text-stone-200 px-3 py-1.5 rounded-lg whitespace-nowrap border border-stone-800 transition">Combat & Gear</button>
+          <button onclick="setCategory('Spawners')" class="cat-btn bg-stone-950 text-stone-400 hover:text-stone-200 px-3 py-1.5 rounded-lg whitespace-nowrap border border-stone-800 transition">Spawners</button>
+          <button onclick="setCategory('Materials')" class="cat-btn bg-stone-950 text-stone-400 hover:text-stone-200 px-3 py-1.5 rounded-lg whitespace-nowrap border border-stone-800 transition">Materials</button>
+          <button onclick="setCategory('Rares')" class="cat-btn bg-stone-950 text-stone-400 hover:text-stone-200 px-3 py-1.5 rounded-lg whitespace-nowrap border border-stone-800 transition">Rares & Food</button>
+        </div>
+      </div>
+
+      <!-- ITEM CATALOG GRID -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4" id="catalog-grid"></div>
+    </main>
+
+    <!-- RIGHT COLUMN: LIVE ORDERS FEED -->
+    <aside class="bg-stone-900 border border-stone-800 rounded-2xl p-4 flex flex-col h-[650px] sticky top-20">
+      <div class="flex items-center justify-between border-b border-stone-800 pb-3 mb-3">
+        <div class="flex items-center space-x-2">
+          <span class="relative flex h-2.5 w-2.5">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+          </span>
+          <h2 class="font-bold text-stone-200 text-sm">Global Live Feed</h2>
+        </div>
+        <span class="text-[10px] text-stone-500 font-mono" id="order-count">0 Orders</span>
+      </div>
+
+      <div id="live-feed" class="space-y-2.5 overflow-y-auto flex-grow pr-1">
+        <div class="bg-stone-950 border border-stone-800/80 p-6 rounded-xl text-center text-xs text-stone-500">
+          Connecting to market network...
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- MODAL: POST ORDER -->
+  <div id="modal-create" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-stone-900 border border-stone-800 w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-4">
+      <div class="flex justify-between items-center border-b border-stone-800 pb-3">
+        <h2 class="text-base font-bold text-stone-100">Post Order to Market</h2>
+        <button onclick="closeModal('create')" class="text-stone-500 hover:text-stone-300 text-lg">&times;</button>
+      </div>
+      
+      <form onsubmit="submitOrder(event)" class="space-y-3.5">
+        <div>
+          <label class="text-xs text-stone-400 block mb-1">Order Type</label>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="cursor-pointer">
+              <input type="radio" name="orderType" value="WTS" checked class="peer sr-only">
+              <div class="p-2 rounded-xl border border-stone-800 bg-stone-950 text-center text-xs font-bold text-stone-400 peer-checked:border-emerald-500/80 peer-checked:bg-emerald-500/10 peer-checked:text-emerald-400 transition">
+                Selling (WTS)
+              </div>
+            </label>
+            <label class="cursor-pointer">
+              <input type="radio" name="orderType" value="WTB" class="peer sr-only">
+              <div class="p-2 rounded-xl border border-stone-800 bg-stone-950 text-center text-xs font-bold text-stone-400 peer-checked:border-blue-500/80 peer-checked:bg-blue-500/10 peer-checked:text-blue-400 transition">
+                Buying (WTB)
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <label class="text-xs text-stone-400 block mb-1">Item Name</label>
+          <input type="text" id="order-item" required placeholder="e.g., Elytra Wings, Blaze Spawner" class="w-full bg-stone-950 border border-stone-800 rounded-xl px-3 py-2 text-xs text-stone-200 focus:outline-none focus:border-amber-500">
+        </div>
+
+        <div>
+          <label class="text-xs text-stone-400 block mb-1">Price ($ Donut SMP Currency)</label>
+          <input type="text" id="order-price" required placeholder="e.g., $343,500,000" class="w-full bg-stone-950 border border-stone-800 rounded-xl px-3 py-2 text-xs text-stone-200 focus:outline-none focus:border-amber-500">
+        </div>
+
+        <div>
+          <label class="text-xs text-stone-400 block mb-1">Trade Instructions / Coords Note</label>
+          <textarea id="order-note" placeholder="e.g., Meet at Spawn or Vault 2. Chat here to negotiate." class="w-full bg-stone-950 border border-stone-800 rounded-xl px-3 py-2 text-xs text-stone-200 focus:outline-none focus:border-amber-500 h-20 resize-none"></textarea>
+        </div>
+
+        <div class="flex justify-end space-x-2 pt-2">
+          <button type="button" onclick="closeModal('create')" class="px-4 py-2 text-xs font-semibold text-stone-400 hover:text-stone-200">Cancel</button>
+          <button type="submit" class="bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold px-4 py-2 rounded-xl text-xs transition">Broadcast Live</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: NEGOTIATION CHAT -->
+  <div id="modal-chat" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-stone-900 border border-stone-800 w-full max-w-md rounded-2xl flex flex-col h-[500px] shadow-2xl">
+      <div class="p-4 border-b border-stone-800 flex justify-between items-center bg-stone-950 rounded-t-2xl">
+        <div>
+          <h3 id="chat-title" class="font-bold text-stone-100 text-xs sm:text-sm">Negotiating Order</h3>
+          <p id="chat-seller" class="text-[11px] text-amber-400">Trader: Unknown</p>
+        </div>
+        <button onclick="closeModal('chat')" class="text-stone-500 hover:text-stone-300 text-xl font-bold">&times;</button>
+      </div>
+
+      <div id="chat-messages" class="flex-grow p-4 overflow-y-auto space-y-3 bg-stone-900/50"></div>
+
+      <form onsubmit="sendChatMessage(event)" class="p-3 border-t border-stone-800 bg-stone-950 rounded-b-2xl flex gap-2">
+        <input type="text" id="chat-input" required placeholder="Type counter-offer or trade message..." class="flex-grow bg-stone-900 border border-stone-800 rounded-xl px-3 py-2 text-xs text-stone-200 focus:outline-none focus:border-amber-500">
+        <button type="submit" class="bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-bold px-3 py-2 rounded-xl text-xs transition">Send</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- CLIENT-SIDE SCRIPT -->
+  <script>
+    // ACCURATE DONUT.AUCTION PRESETS
+    const DONUT_CATALOG = [
+      { name: "Elytra Wings", icon: "🪽", price: "$343,588,648", category: "Combat", rarity: "Epic", desc: "Unbreaking III • Mending" },
+      { name: "Dragon Head", icon: "🐉", price: "$72,099,910", category: "Rares", rarity: "Legendary", desc: "Rare Decorative Collectible" },
+      { name: "Block of Netherite", icon: "⬛", price: "$31,433,968", category: "Materials", rarity: "Rare", desc: "Full Stack Ingot Material (x1)" },
+      { name: "Blaze Spawner", icon: "🔥", price: "$15,000,000", category: "Spawners", rarity: "Legendary", desc: "Tier 3 Mob Generator" },
+      { name: "Netherite Helmet", icon: "🪖", price: "$4,962,550", category: "Combat", rarity: "Rare", desc: "Protection IV • Unbreaking III" },
+      { name: "Netherite Sword", icon: "🗡️", price: "$4,612,927", category: "Combat", rarity: "Rare", desc: "Sharpness V • Fire Aspect II" },
+      { name: "Netherite Ingot", icon: "🧱", price: "$3,600,295", category: "Materials", rarity: "Uncommon", desc: "Pure Netherite Alloy" },
+      { name: "Enchanted Golden Apple", icon: "🍎", price: "$1,644,315", category: "Rares", rarity: "Uncommon", desc: "Notch Apple Consumable" },
+      { name: "Ancient Debris", icon: "🪨", price: "$1,119,913", category: "Materials", rarity: "Uncommon", desc: "Unrefined Ore Block" },
+      { name: "Totem of Undying", icon: "🗿", price: "$55,667", category: "Combat", rarity: "Common", desc: "Second Chance Offhand Item" }
+    ];
+
+    const currentUsername = "Player_" + Math.floor(1000 + Math.random() * 9000);
+    document.getElementById("user-display").innerText = currentUsername;
+
+    // SOCKET.IO REAL-TIME CONNECTION
+    const socket = io();
+    let activeCategory = "All";
+    let activeOrders = [];
+    let currentChatOrderId = null;
+
+    socket.on('connect', () => {
+      const statusBadge = document.getElementById("connection-status");
+      statusBadge.className = "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1";
+      statusBadge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Live Connected`;
+    });
+
+    socket.on('disconnect', () => {
+      const statusBadge = document.getElementById("connection-status");
+      statusBadge.className = "bg-red-500/10 text-red-400 border border-red-500/30 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1";
+      statusBadge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-red-400"></span> Disconnected`;
+    });
+
+    // 1. Initial Load of Server Orders
+    socket.on('init_orders', (orders) => {
+      activeOrders = orders;
+      renderFeed();
+    });
+
+    // 2. Real-Time Broadcast Listener
+    socket.on('new_order_placed', (order) => {
+      activeOrders.unshift(order);
+      renderFeed();
+    });
+
+    function renderFeed() {
+      const feed = document.getElementById("live-feed");
+      document.getElementById("order-count").innerText = `${activeOrders.length} Orders`;
+
+      if (activeOrders.length === 0) {
+        feed.innerHTML = `<div class="bg-stone-950 border border-stone-800 p-6 rounded-xl text-center text-xs text-stone-500">No active market listings. Be the first to post!</div>`;
+        return;
+      }
+
+      feed.innerHTML = activeOrders.map(order => {
+        const isWTS = order.type === "WTS";
+        return `
+          <div onclick="openChatModal('${order.id}', '${order.item}', '${order.price}', '${order.seller}')" class="bg-stone-950 border border-stone-800/80 hover:border-amber-500/60 p-3 rounded-xl text-xs cursor-pointer transition animate-order group shadow-lg">
+            <div class="flex justify-between items-center mb-1">
+              <span class="${isWTS ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-blue-500/10 text-blue-400 border-blue-500/30'} border text-[9px] font-bold px-1.5 py-0.5 rounded">
+                ${order.type}
+              </span>
+              <span class="text-[10px] text-stone-500 font-mono">${order.timestamp}</span>
+            </div>
+            <div class="font-bold text-amber-400 group-hover:underline text-xs sm:text-sm">${order.item}</div>
+            <div class="text-stone-200 font-mono font-bold mt-0.5 text-xs">${order.price}</div>
+            <p class="text-stone-400 text-[11px] mt-1 italic line-clamp-1">"${order.note}"</p>
+            <div class="mt-2 pt-2 border-t border-stone-900 flex justify-between items-center text-[10px]">
+              <span class="text-stone-500">Player: <strong class="text-stone-300">${order.seller}</strong></span>
+              <span class="text-emerald-400 font-semibold group-hover:translate-x-0.5 transition">Negotiate 💬</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // CATALOG ENGINE
+    function renderCatalog() {
+      const grid = document.getElementById("catalog-grid");
+      const searchTerm = document.getElementById("search-input").value.toLowerCase();
+
+      const filtered = DONUT_CATALOG.filter(item => {
+        const matchesCat = activeCategory === "All" || item.category === activeCategory;
+        const matchesSearch = item.name.toLowerCase().includes(searchTerm) || item.desc.toLowerCase().includes(searchTerm);
+        return matchesCat && matchesSearch;
+      });
+
+      if (filtered.length === 0) {
+        grid.innerHTML = `<div class="col-span-full bg-stone-900 border border-stone-800 p-8 rounded-2xl text-center text-xs text-stone-500">No items matched your search query.</div>`;
+        return;
+      }
+
+      grid.innerHTML = filtered.map(item => `
+        <div class="bg-stone-900 border border-stone-800/80 rounded-2xl p-4 flex flex-col justify-between hover:border-amber-500/40 transition group">
+          <div>
+            <div class="flex justify-between items-start">
+              <span class="text-3xl">${item.icon}</span>
+              <span class="bg-stone-950 text-stone-400 border border-stone-800 text-[10px] font-mono px-2 py-0.5 rounded-md">${item.rarity}</span>
+            </div>
+            <h3 class="font-bold text-stone-100 mt-2.5 text-sm group-hover:text-amber-400 transition">${item.name}</h3>
+            <p class="text-xs text-stone-400 mt-0.5">${item.desc}</p>
+          </div>
+          <div class="mt-4 flex items-center justify-between border-t border-stone-800/60 pt-3">
+            <div>
+              <span class="text-[10px] text-stone-500 block uppercase">Donut.Auction Avg</span>
+              <span class="text-amber-400 font-mono font-bold text-xs sm:text-sm">${item.price}</span>
+            </div>
+            <button onclick="prefillOrder('${item.name}', '${item.price}')" class="bg-stone-950 hover:bg-stone-800 text-stone-200 border border-stone-800 text-xs font-semibold px-3 py-1.5 rounded-xl transition">
+              Quick List
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function setCategory(cat) {
+      activeCategory = cat;
+      document.querySelectorAll(".cat-btn").forEach(btn => {
+        if (btn.innerText.includes(cat) || (cat === "All" && btn.innerText.includes("All"))) {
+          btn.className = "cat-btn bg-amber-500 text-stone-950 font-bold px-3 py-1.5 rounded-lg whitespace-nowrap transition";
+        } else {
+          btn.className = "cat-btn bg-stone-950 text-stone-400 hover:text-stone-200 px-3 py-1.5 rounded-lg whitespace-nowrap border border-stone-800 transition";
+        }
+      });
+      renderCatalog();
+    }
+
+    function filterCatalog() { renderCatalog(); }
+
+    // MODAL & ORDER SUBMISSION
+    function openModal(id) { document.getElementById(`modal-${id}`).classList.remove("hidden"); }
+    function closeModal(id) { document.getElementById(`modal-${id}`).classList.add("hidden"); }
+
+    function prefillOrder(name, price) {
+      document.getElementById("order-item").value = name;
+      document.getElementById("order-price").value = price;
+      openModal('create');
+    }
+
+    function submitOrder(e) {
+      e.preventDefault();
+      const type = document.querySelector('input[name="orderType"]:checked').value;
+      
+      socket.emit("place_order", {
+        type: type,
+        seller: currentUsername,
+        item: document.getElementById("order-item").value,
+        price: document.getElementById("order-price").value,
+        note: document.getElementById("order-note").value
+      });
+
+      document.getElementById("order-item").value = "";
+      document.getElementById("order-price").value = "";
+      document.getElementById("order-note").value = "";
+      closeModal('create');
+    }
+
+    // REAL-TIME CHAT NEGOTIATION
+    function openChatModal(id, item, price, seller) {
+      currentChatOrderId = id;
+      document.getElementById("chat-title").innerText = `Order: ${item} (${price})`;
+      document.getElementById("chat-seller").innerText = `Posted by: ${seller}`;
+      document.getElementById("chat-messages").innerHTML = `
+        <div class="bg-stone-950 border border-stone-800/80 p-2.5 rounded-xl text-xs text-stone-400">
+          💬 Negotiating for <strong>${item}</strong>. Messages sent here update live for all traders.
+        </div>
+      `;
+
+      socket.emit('join_trade_room', id);
+      openModal('chat');
+    }
+
+    socket.on('chat_history', (messages) => {
+      messages.forEach(msg => appendChatMessage(msg.sender, msg.text, msg.timestamp));
+    });
+
+    socket.on('receive_chat_message', (msg) => {
+      appendChatMessage(msg.sender, msg.text, msg.timestamp);
+    });
+
+    function sendChatMessage(e) {
+      e.preventDefault();
+      const input = document.getElementById("chat-input");
+      const text = input.value.trim();
+      if (!text || !currentChatOrderId) return;
+
+      socket.emit('send_chat_message', {
+        orderId: currentChatOrderId,
+        sender: currentUsername,
+        text: text
+      });
+
+      input.value = "";
+    }
+
+    function appendChatMessage(sender, text, time) {
+      const container = document.getElementById("chat-messages");
+      const bubble = document.createElement("div");
+      const isMe = sender === currentUsername;
+
+      bubble.className = `p-2.5 rounded-xl text-xs flex flex-col space-y-1 ${isMe ? 'bg-amber-500/10 border border-amber-500/20 ml-6' : 'bg-stone-950 border border-stone-800 mr-6'}`;
+      bubble.innerHTML = `
+        <div class="flex justify-between text-[10px] text-stone-500">
+          <strong class="${isMe ? 'text-amber-400' : 'text-emerald-400'}">${sender}</strong>
+          <span>${time}</span>
+        </div>
+        <div class="text-stone-200">${text}</div>
+      `;
+
+      container.appendChild(bubble);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    // Initialize Catalog
+    renderCatalog();
+  </script>
+</body>
+</html>
