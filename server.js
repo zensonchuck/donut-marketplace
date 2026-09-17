@@ -29,6 +29,7 @@ const USERS_FILE = path.join(DATA_DIR, "users.json");
 const LISTINGS_FILE = path.join(DATA_DIR, "listings.json");
 const FUNDING_FILE = path.join(DATA_DIR, "funding.json");
 const TRADES_FILE = path.join(DATA_DIR, "trades.json");
+const CHAT_FILE = path.join(DATA_DIR, "chat.json"); // NEW: persist trade-room chat across restarts
 
 const SESSION_LENGTH = 1000 * 60 * 60 * 24 * 7; // 7 days
 const OWNER_SESSION_LENGTH = 1000 * 60 * 60 * 4; // 4 hours
@@ -89,6 +90,7 @@ ensureFile(USERS_FILE);
 ensureFile(LISTINGS_FILE);
 ensureFile(FUNDING_FILE);
 ensureFile(TRADES_FILE);
+ensureFile(CHAT_FILE); // NEW
 
 function loadJSON(file) {
   try {
@@ -134,6 +136,39 @@ let users = loadJSON(USERS_FILE);
 let listings = loadJSON(LISTINGS_FILE);
 let fundingRequests = loadJSON(FUNDING_FILE);
 let trades = loadJSON(TRADES_FILE);
+
+// NEW: chat is stored as a flat array of { room, sender, text, timestamp }
+// and grouped in memory by room for fast lookups.
+let chatLog = loadJSON(CHAT_FILE);
+
+const chatMessages = {}; // orderId/room -> [{ sender, text, timestamp }]
+
+for (const entry of chatLog) {
+  if (!entry || !entry.room) {
+    continue;
+  }
+
+  if (!chatMessages[entry.room]) {
+    chatMessages[entry.room] = [];
+  }
+
+  chatMessages[entry.room].push({
+    sender: entry.sender,
+    text: entry.text,
+    timestamp: entry.timestamp
+  });
+}
+
+function persistChatMessage(room, message) {
+  chatLog.push({
+    room,
+    sender: message.sender,
+    text: message.text,
+    timestamp: message.timestamp
+  });
+
+  saveJSON(CHAT_FILE, chatLog);
+}
 
 // ============================================================
 // GENERAL HELPERS
@@ -255,6 +290,22 @@ function publicUser(user) {
     username: user.username,
     balance: user.balance,
     createdAt: user.createdAt
+  };
+}
+
+// NEW: converts an internal listing object into the shape
+// index.html's normalizeListing() expects over sockets.
+function toClientOrder(listing) {
+  return {
+    id: listing.id,
+    item: listing.spawnerType,
+    price: listing.price,
+    seller: listing.seller,
+    type: listing.type || "sell",
+    note: listing.note || "",
+    timestamp: listing.createdAt,
+    quantity: listing.quantity,
+    status: listing.status
   };
 }
 
@@ -1534,6 +1585,13 @@ io.on("connection", socket => {
     listings
   );
 
+  // NEW: index.html's normalizeListing() expects the "orders"
+  // event on connect, in the {item, price, seller, type, ...} shape.
+  socket.emit(
+    "orders",
+    listings.map(toClientOrder)
+  );
+
   socket.on(
     "get_spawner_listings",
     () => {
@@ -1554,6 +1612,189 @@ io.on("connection", socket => {
     }
   );
 
+  // NEW: index.html calls this on load and on reconnect.
+  socket.on(
+    "get_orders",
+    () => {
+      socket.emit(
+        "orders",
+        listings.map(toClientOrder)
+      );
+    }
+  );
+
+  // NEW: this is the handler that was completely missing before.
+  // index.html's submitOrder() emits "place_order" with an ack
+  // callback and waits on it (or on order_created/new_order) — with
+  // no listener here, that callback never fired and the "Publish"
+  // button was stuck showing "Publishing..." until the client's own
+  // 15-second timeout gave up.
+  socket.on(
+    "place_order",
+    (payload, callback) => {
+      try {
+        const spawnerType = clean(
+          payload?.item ||
+            payload?.spawnerType ||
+            payload?.type,
+          80
+        );
+
+        const price = cleanNumber(
+          payload?.price
+        );
+
+        const quantity = cleanNumber(
+          payload?.quantity || 1
+        );
+
+        const note = clean(
+          payload?.note,
+          300
+        );
+
+        const orderType =
+          payload?.type === "buy"
+            ? "buy"
+            : "sell";
+
+        if (!spawnerType) {
+          if (
+            typeof callback === "function"
+          ) {
+            callback({
+              success: false,
+              message:
+                "Spawner type is required."
+            });
+          }
+
+          return;
+        }
+
+        if (
+          price === null ||
+          price <= 0
+        ) {
+          if (
+            typeof callback === "function"
+          ) {
+            callback({
+              success: false,
+              message: "Enter a valid price."
+            });
+          }
+
+          return;
+        }
+
+        if (
+          quantity === null ||
+          quantity <= 0
+        ) {
+          if (
+            typeof callback === "function"
+          ) {
+            callback({
+              success: false,
+              message:
+                "Enter a valid quantity."
+            });
+          }
+
+          return;
+        }
+
+        // NOTE: socket-created listings have no authenticated
+        // user attached (unlike POST /api/spawners, which uses
+        // requireUser), so sellerId stays null and seller falls
+        // back to whatever the client sent, or "Unknown".
+        const listing = {
+          id: id(),
+
+          sellerId: null,
+
+          seller:
+            clean(payload?.seller, 24) ||
+            "Unknown",
+
+          spawnerType,
+
+          type: orderType,
+
+          note,
+
+          quantity,
+
+          price,
+
+          status: "active",
+
+          createdAt: Date.now()
+        };
+
+        listings.push(listing);
+
+        saveJSON(
+          LISTINGS_FILE,
+          listings
+        );
+
+        const clientOrder =
+          toClientOrder(listing);
+
+        io.emit(
+          "new_order",
+          clientOrder
+        );
+
+        io.emit(
+          "order_created",
+          clientOrder
+        );
+
+        io.emit(
+          "orders",
+          listings.map(toClientOrder)
+        );
+
+        io.emit(
+          "spawner_listing_created",
+          listing
+        );
+
+        io.emit(
+          "listings_updated",
+          listings
+        );
+
+        if (
+          typeof callback === "function"
+        ) {
+          callback({
+            success: true,
+            order: clientOrder
+          });
+        }
+      } catch (error) {
+        console.error(
+          "place_order failed:",
+          error
+        );
+
+        if (
+          typeof callback === "function"
+        ) {
+          callback({
+            success: false,
+            message:
+              "Server error while creating the listing."
+          });
+        }
+      }
+    }
+  );
+
   socket.on(
     "join_trade_room",
     data => {
@@ -1571,6 +1812,98 @@ io.on("connection", socket => {
       socket.join(
         String(room)
       );
+    }
+  );
+
+  // NEW: index.html's openChatModal() calls this right after
+  // join_trade_room to load prior messages for that listing.
+  socket.on(
+    "get_chat_history",
+    orderId => {
+      const room = String(orderId || "");
+
+      socket.emit(
+        "chat_history",
+        chatMessages[room] || []
+      );
+    }
+  );
+
+  // NEW: index.html's sendChatMessage() emits this; with no
+  // listener before, messages typed in the negotiation chat
+  // went nowhere and no one ever received them.
+  socket.on(
+    "send_chat_message",
+    data => {
+      const room = String(
+        data?.orderId || ""
+      );
+
+      if (!room) {
+        return;
+      }
+
+      const text = clean(
+        data?.text,
+        500
+      );
+
+      if (!text) {
+        return;
+      }
+
+      const message = {
+        sender:
+          clean(data?.sender, 24) ||
+          "Unknown",
+
+        text,
+
+        timestamp: Date.now()
+      };
+
+      if (!chatMessages[room]) {
+        chatMessages[room] = [];
+      }
+
+      chatMessages[room].push(
+        message
+      );
+
+      persistChatMessage(
+        room,
+        message
+      );
+
+      io.to(room).emit(
+        "receive_chat_message",
+        message
+      );
+
+      // Also echo back to the sender directly, in case they
+      // haven't been added to the room yet for any reason.
+      socket.emit(
+        "receive_chat_message",
+        message
+      );
+    }
+  );
+
+  socket.on(
+    "leave_trade_room",
+    data => {
+      const room =
+        typeof data === "string"
+          ? data
+          : data?.tradeId ||
+            data?.orderId ||
+            data?.roomId;
+
+      if (room) {
+        socket.leave(
+          String(room)
+        );
+      }
     }
   );
 
