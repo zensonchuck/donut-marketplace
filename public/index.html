@@ -13,6 +13,7 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.cdnfonts.com/css/minecraft-3" rel="stylesheet">
 
   <script>
     tailwind.config = {
@@ -197,6 +198,40 @@
       font-variant-numeric: tabular-nums;
     }
 
+    .mc-font,
+    .mc-price {
+      font-family: "Minecraft", monospace;
+      font-weight: 400;
+      letter-spacing: .02em;
+      text-shadow: 1px 1px 0 #3f3f3f;
+    }
+
+    .mc-price {
+      color: #55ff55;
+      image-rendering: pixelated;
+    }
+
+    .mc-dollar {
+      color: #55ff55;
+    }
+
+    .mc-number {
+      color: #ffffff;
+    }
+
+    .spawner-render {
+      width: 42px;
+      height: 42px;
+      object-fit: contain;
+      image-rendering: auto;
+      filter: drop-shadow(0 4px 7px rgba(0,0,0,.45));
+    }
+
+    .reputation-badge {
+      font-family: "Minecraft", monospace;
+      text-shadow: 1px 1px 0 #3f3f3f;
+    }
+
     input,
     textarea,
     select {
@@ -263,7 +298,11 @@
             shadow-glow
           "
         >
-          🧟
+          <img
+            src="https://blockrender.dev/render/item/spawner.png?size=128"
+            alt="Minecraft spawner"
+            class="h-8 w-8 object-contain"
+          />
         </div>
 
         <div class="hidden sm:block">
@@ -307,7 +346,7 @@
           id="search-input"
           type="search"
           autocomplete="off"
-          placeholder="Search spawners..."
+          placeholder="Search spawners or usernames..."
           class="
             h-10
             w-full
@@ -352,6 +391,14 @@
       <!-- ACTIONS -->
 
       <div class="flex items-center gap-2">
+
+        <button
+          type="button"
+          onclick="openUsernameModal()"
+          class="hidden h-10 items-center gap-2 rounded-xl border border-stone-800 bg-stone-950 px-3 text-xs font-bold text-stone-400 hover:border-stone-700 hover:text-stone-200 sm:flex"
+        >
+          <span id="username-button-label">Set username</span>
+        </button>
 
         <button
           type="button"
@@ -558,7 +605,7 @@
               sm:text-5xl
             "
           >
-            Buy & sell
+            Find & trade
             <span class="text-amber-400">
               spawners.
             </span>
@@ -574,9 +621,9 @@
               sm:text-base
             "
           >
-            A focused DonutSMP marketplace built
-            specifically for buying and selling mob
-            spawners.
+            A focused DonutSMP trading board for finding
+            spawners, checking trader reputation, and
+            arranging trades in-game.
           </p>
 
         </div>
@@ -663,7 +710,7 @@
             text-amber-300
           "
         >
-          🧟 Spawners Only
+          Spawners Only
         </div>
 
         <div class="text-xs text-stone-600">
@@ -709,7 +756,7 @@
             text-stone-600
           "
         >
-          Only active spawner listings are displayed.
+          Search spawners or trader usernames. All trades are completed in-game.
         </div>
 
       </div>
@@ -801,7 +848,11 @@
             text-2xl
           "
         >
-          🧟
+          <img
+            src="https://blockrender.dev/render/item/spawner.png?size=128"
+            alt="Minecraft spawner"
+            class="h-12 w-12 object-contain"
+          />
         </div>
 
         <h2
@@ -916,7 +967,7 @@
             text-stone-600
           "
         >
-          Only DonutSMP spawners can be listed.
+          List your spawner and meet the trader in-game to complete the trade.
         </div>
 
       </div>
@@ -1023,43 +1074,7 @@
           />
 
         </div>
-
-        <div>
-
-          <label
-            for="order-type"
-            class="
-              mb-2
-              block
-              text-[11px]
-              font-bold
-              uppercase
-              tracking-wider
-              text-stone-500
-            "
-          >
-            Listing Type
-          </label>
-
-          <select
-            id="order-type"
-            class="
-              h-11
-              w-full
-              rounded-xl
-              border
-              border-stone-800
-              bg-stone-950
-              px-3
-              text-sm
-              text-stone-300
-            "
-          >
-            <option value="sell">Sell</option>
-            <option value="buy">Buy / Wanted</option>
-          </select>
-
-        </div>
+      <input id="order-type" type="hidden" value="sell" />
 
       </div>
 
@@ -1373,6 +1388,69 @@
 
 </div>
 
+<!-- USERNAME MODAL -->
+
+<div
+  id="username-modal"
+  class="modal-backdrop fixed inset-0 z-50 hidden items-center justify-center p-4"
+>
+  <div class="w-full max-w-md overflow-hidden rounded-3xl border border-stone-800 bg-zinc-950 shadow-2xl">
+    <div class="flex items-center justify-between border-b border-stone-800 p-5">
+      <div>
+        <div class="text-sm font-black text-stone-100">Your trader name</div>
+        <div class="mt-1 text-[11px] text-stone-600">You can change it once every 2 hours.</div>
+      </div>
+      <button type="button" onclick="closeModal('username-modal')" class="rounded-lg px-2 py-1 text-stone-600 hover:text-stone-300">✕</button>
+    </div>
+    <form id="username-form" class="space-y-4 p-5">
+      <input id="username-input" maxlength="24" autocomplete="off" placeholder="Minecraft username" class="h-11 w-full rounded-xl border border-stone-800 bg-stone-950 px-3 text-sm text-stone-200 placeholder:text-stone-700" />
+      <div id="username-cooldown" class="text-xs text-stone-600"></div>
+      <div class="flex justify-end gap-2 border-t border-stone-800 pt-4">
+        <button type="button" onclick="closeModal('username-modal')" class="rounded-xl px-4 py-2.5 text-xs font-bold text-stone-500 hover:text-stone-300">Cancel</button>
+        <button type="submit" class="rounded-xl bg-amber-500 px-5 py-2.5 text-xs font-black text-black hover:bg-amber-400">Save username</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- TRADER PROFILE / REPUTATION MODAL -->
+
+<div
+  id="trader-modal"
+  class="modal-backdrop fixed inset-0 z-50 hidden items-center justify-center p-4"
+>
+  <div class="w-full max-w-lg overflow-hidden rounded-3xl border border-stone-800 bg-zinc-950 shadow-2xl">
+    <div class="flex items-center justify-between border-b border-stone-800 p-5">
+      <div>
+        <div id="trader-name" class="text-lg font-black text-stone-100">Trader</div>
+        <div class="mt-1 text-[11px] text-stone-600">Trader reputation</div>
+      </div>
+      <button type="button" onclick="closeModal('trader-modal')" class="rounded-lg px-2 py-1 text-stone-600 hover:text-stone-300">✕</button>
+    </div>
+    <div class="space-y-4 p-5">
+      <div class="grid grid-cols-2 gap-3">
+        <div class="rounded-2xl border border-emerald-500/15 bg-emerald-500/5 p-4">
+          <div class="text-[10px] font-bold uppercase tracking-wider text-stone-600">Vouches</div>
+          <div id="trader-vouches" class="mt-1 text-2xl font-black text-emerald-400">0</div>
+        </div>
+        <div class="rounded-2xl border border-red-500/15 bg-red-500/5 p-4">
+          <div class="text-[10px] font-bold uppercase tracking-wider text-stone-600">Scam-vouches</div>
+          <div id="trader-scams" class="mt-1 text-2xl font-black text-red-400">0</div>
+        </div>
+      </div>
+      <div class="rounded-2xl border border-stone-800 bg-stone-950 p-4">
+        <div class="text-xs font-black text-stone-200">Trade safely</div>
+        <div class="mt-1 text-xs leading-5 text-stone-600">The website does not process payments. Meet up in-game and verify the trade before sending anything.</div>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <button type="button" onclick="submitReputation('vouch')" class="rounded-xl bg-emerald-500 px-4 py-3 text-xs font-black text-black hover:bg-emerald-400">Vouch</button>
+        <button type="button" onclick="submitReputation('scam')" class="rounded-xl bg-red-500/10 px-4 py-3 text-xs font-black text-red-300 border border-red-500/20 hover:bg-red-500/15">Scam-vouch</button>
+      </div>
+      <div id="trader-reputation-note" class="text-[10px] text-stone-600"></div>
+    </div>
+  </div>
+</div>
+
 <!-- TOASTS -->
 
 <div
@@ -1398,6 +1476,10 @@
 
   const socket = io();
 
+  const USERNAME_STORAGE_KEY = "donut_market_username_v2";
+  const USERNAME_CHANGED_AT_KEY = "donut_market_username_changed_at_v2";
+  const REPUTATION_STORAGE_KEY = "donut_market_reputation_v2";
+
   /* =========================================================
      STATE
      ========================================================= */
@@ -1410,6 +1492,9 @@
     currentListing: null,
     currentChatOrderId: null,
     currentUsername: null,
+    currentTrader: null,
+    currentReputationOrderId: null,
+    chatMessageKeys: new Set(),
     connected: false,
     loaded: false
   };
@@ -1428,7 +1513,7 @@
       id: "skeleton-spawner",
       name: "Skeleton Spawner",
       category: "spawners",
-      icon: "💀",
+      icon: "https://blockrender.dev/render/item/spawner.png?size=128",
       aliases: [
         "skeleton",
         "skeleton spawner"
@@ -1439,7 +1524,7 @@
       id: "pig-spawner",
       name: "Pig Spawner",
       category: "spawners",
-      icon: "🐷",
+      icon: "https://blockrender.dev/render/item/spawner.png?size=128",
       aliases: [
         "pig",
         "pig spawner"
@@ -1450,7 +1535,7 @@
       id: "cow-spawner",
       name: "Cow Spawner",
       category: "spawners",
-      icon: "🐄",
+      icon: "https://blockrender.dev/render/item/spawner.png?size=128",
       aliases: [
         "cow",
         "cow spawner"
@@ -1461,7 +1546,7 @@
       id: "spider-spawner",
       name: "Spider Spawner",
       category: "spawners",
-      icon: "🕷️",
+      icon: "https://blockrender.dev/render/item/spawner.png?size=128",
       aliases: [
         "spider",
         "spider spawner"
@@ -1472,7 +1557,7 @@
       id: "zombified-piglin-spawner",
       name: "Zombie Piglin Spawner",
       category: "spawners",
-      icon: "🧟",
+      icon: "https://blockrender.dev/render/item/spawner.png?size=128",
       aliases: [
         "zombie piglin",
         "zombified piglin",
@@ -1485,7 +1570,7 @@
       id: "blaze-spawner",
       name: "Blaze Spawner",
       category: "spawners",
-      icon: "🔥",
+      icon: "https://blockrender.dev/render/item/spawner.png?size=128",
       aliases: [
         "blaze",
         "blaze spawner"
@@ -1496,7 +1581,7 @@
       id: "creeper-spawner",
       name: "Creeper Spawner",
       category: "spawners",
-      icon: "💣",
+      icon: "https://blockrender.dev/render/item/spawner.png?size=128",
       aliases: [
         "creeper",
         "creeper spawner"
@@ -1507,7 +1592,7 @@
       id: "iron-golem-spawner",
       name: "Iron Golem Spawner",
       category: "spawners",
-      icon: "🗿",
+      icon: "https://blockrender.dev/render/item/spawner.png?size=128",
       aliases: [
         "iron golem",
         "iron golem spawner",
@@ -1538,6 +1623,7 @@
 
   function initialize() {
 
+    loadLocalUsername();
     populateSpawnerSelect();
     bindUIEvents();
 
@@ -1589,6 +1675,14 @@
     $("#chat-form").addEventListener(
       "submit",
       sendChatMessage
+    );
+
+    $("#username-form").addEventListener(
+      "submit",
+      event => {
+        event.preventDefault();
+        saveUsername();
+      }
     );
 
     document.addEventListener(
@@ -2218,8 +2312,24 @@
       text-2xl
     `;
 
-    icon.textContent =
-      catalog?.icon || "🧟";
+    const iconImage =
+      document.createElement("img");
+
+    iconImage.src =
+      catalog?.icon ||
+      "https://blockrender.dev/render/item/spawner.png?size=128";
+
+    iconImage.alt =
+      catalog?.name ||
+      listing.item ||
+      "Minecraft spawner";
+
+    iconImage.className =
+      "spawner-render";
+
+    icon.appendChild(
+      iconImage
+    );
 
     const titleWrap =
       document.createElement(
@@ -2461,6 +2571,15 @@
       sellerName
     );
 
+    const repBadge =
+      createReputationBadge(
+        listing.seller || "Unknown"
+      );
+
+    seller.appendChild(
+      repBadge
+    );
+
     priceRow.appendChild(
       seller
     );
@@ -2602,7 +2721,7 @@
     `;
 
     chat.textContent =
-      "Negotiate";
+      "Meet in-game";
 
     chat.addEventListener(
       "click",
@@ -2813,8 +2932,7 @@
 
     event.preventDefault();
 
-    const type =
-      $("#order-type").value;
+    const type = "sell";
 
     const item =
       $("#order-item").value.trim();
@@ -3202,8 +3320,24 @@
       text-3xl
     `;
 
-    icon.textContent =
-      catalog?.icon || "🧟";
+    const iconImage =
+      document.createElement("img");
+
+    iconImage.src =
+      catalog?.icon ||
+      "https://blockrender.dev/render/item/spawner.png?size=128";
+
+    iconImage.alt =
+      catalog?.name ||
+      listing.item ||
+      "Minecraft spawner";
+
+    iconImage.className =
+      "spawner-render";
+
+    icon.appendChild(
+      iconImage
+    );
 
     const heading =
       document.createElement(
@@ -3384,8 +3518,22 @@
       )
     );
 
+    const traderProfileButton =
+      document.createElement("button");
+
+    traderProfileButton.type = "button";
+    traderProfileButton.className =
+      "mt-3 w-full rounded-xl border border-stone-800 bg-stone-950 px-4 py-3 text-left hover:border-stone-700";
+    traderProfileButton.innerHTML =
+      `<span class="text-[10px] font-bold uppercase tracking-wider text-stone-600">Trader reputation</span><span class="mt-1 block text-sm font-black text-emerald-400">${escapeHtml(listing.seller || "Unknown")} · ${getReputationSummary(listing.seller || "Unknown").vouches} vouches · ${getReputationSummary(listing.seller || "Unknown").scams} scam-vouches</span>`;
+    traderProfileButton.addEventListener("click", () => openTraderModal(listing.seller || "Unknown", listing.id));
+
     wrapper.appendChild(
       details
+    );
+
+    wrapper.appendChild(
+      traderProfileButton
     );
 
     /* NOTE */
@@ -3466,7 +3614,7 @@
     `;
 
     action.textContent =
-      "Open Negotiation";
+      "Meet up in-game to trade";
 
     action.addEventListener(
       "click",
@@ -3486,8 +3634,20 @@
       }
     );
 
+    const tradeNotice =
+      document.createElement("div");
+
+    tradeNotice.className =
+      "mt-3 text-center text-[10px] text-stone-600";
+    tradeNotice.textContent =
+      "No payments happen on this website. Meet up in-game to trade.";
+
     wrapper.appendChild(
       action
+    );
+
+    wrapper.appendChild(
+      tradeNotice
     );
 
     container.appendChild(
@@ -3576,13 +3736,15 @@
     state.currentChatOrderId =
       id;
 
+    state.chatMessageKeys = new Set();
+
     $("#chat-title")
       .textContent =
       `Trade: ${item}`;
 
     $("#chat-seller")
       .textContent =
-      `Listed at ${formatPrice(price)} • ${seller || "Unknown seller"}`;
+      `Listed at ${formatPrice(price)} • ${seller || "Unknown seller"} • Meet up in-game to trade`;
 
     $("#chat-messages")
       .innerHTML =
@@ -3657,10 +3819,8 @@
       messages.forEach(
         message => {
 
-          appendChatMessage(
-            message.sender,
-            message.text,
-            message.timestamp
+          appendChatMessageObject(
+            message
           );
 
         }
@@ -3677,10 +3837,15 @@
         return;
       }
 
-      appendChatMessage(
-        message.sender,
-        message.text,
-        message.timestamp
+      if (
+        message.orderId &&
+        String(message.orderId) !== String(state.currentChatOrderId)
+      ) {
+        return;
+      }
+
+      appendChatMessageObject(
+        message
       );
 
     }
@@ -3722,6 +3887,45 @@
 
     input.value =
       "";
+
+  }
+
+  function chatMessageKey(message) {
+
+    if (!message) {
+      return null;
+    }
+
+    if (message.id !== undefined && message.id !== null) {
+      return `id:${message.id}`;
+    }
+
+    return [
+      message.orderId || state.currentChatOrderId || "",
+      message.sender || "",
+      message.timestamp || "",
+      message.text || ""
+    ].join("|");
+
+  }
+
+  function appendChatMessageObject(message) {
+
+    const key = chatMessageKey(message);
+
+    if (!key || state.chatMessageKeys.has(key)) {
+      return false;
+    }
+
+    state.chatMessageKeys.add(key);
+
+    appendChatMessage(
+      message.sender,
+      message.text,
+      message.timestamp
+    );
+
+    return true;
 
   }
 
@@ -4025,10 +4229,10 @@
     }
 
     return (
+      "$" +
       new Intl.NumberFormat(
         "en-US"
-      ).format(numeric) +
-      " ⛁"
+      ).format(numeric)
     );
 
   }
@@ -4106,7 +4310,7 @@
     if (state.search) {
 
       message.textContent =
-        `No spawner listings match "${state.search}".`;
+        `No spawner or trader listings match "${state.search}".`;
 
       return;
 
@@ -4305,6 +4509,410 @@
 
   }
 
+  function escapeHtml(value) {
+
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+
+  }
+
+  /* =========================================================
+     USERNAME + REPUTATION
+     ========================================================= */
+
+  function loadLocalUsername() {
+
+    const saved =
+      localStorage.getItem(
+        USERNAME_STORAGE_KEY
+      );
+
+    if (saved) {
+      setCurrentUsername(saved);
+    }
+
+    updateUsernameButton();
+
+  }
+
+  function updateUsernameButton() {
+
+    const label =
+      $("#username-button-label");
+
+    if (!label) {
+      return;
+    }
+
+    label.textContent =
+      state.currentUsername ||
+      "Set username";
+
+  }
+
+  function getUsernameChangedAt() {
+    return Number(
+      localStorage.getItem(
+        USERNAME_CHANGED_AT_KEY
+      ) || 0
+    );
+  }
+
+  function getUsernameCooldownRemaining() {
+    const elapsed =
+      Date.now() -
+      getUsernameChangedAt();
+
+    return Math.max(
+      0,
+      2 * 60 * 60 * 1000 - elapsed
+    );
+  }
+
+  function formatCooldown(ms) {
+
+    const totalMinutes =
+      Math.ceil(ms / 60000);
+    const hours =
+      Math.floor(totalMinutes / 60);
+    const minutes =
+      totalMinutes % 60;
+
+    return hours
+      ? `${hours}h ${minutes}m`
+      : `${minutes}m`;
+
+  }
+
+  function openUsernameModal() {
+
+    const input =
+      $("#username-input");
+
+    input.value =
+      state.currentUsername ||
+      localStorage.getItem(USERNAME_STORAGE_KEY) ||
+      "";
+
+    updateUsernameCooldownText();
+
+    $("#username-modal")
+      .classList.remove("hidden");
+    $("#username-modal")
+      .classList.add("flex");
+
+    setTimeout(() => input.focus(), 50);
+
+  }
+
+  function updateUsernameCooldownText() {
+
+    const box =
+      $("#username-cooldown");
+    const remaining =
+      getUsernameCooldownRemaining();
+
+    if (remaining > 0) {
+      box.textContent =
+        `Username changes are on cooldown for ${formatCooldown(remaining)}.`;
+      return;
+    }
+
+    box.textContent =
+      "Your username can be changed now.";
+
+  }
+
+  function saveUsername() {
+
+    const input =
+      $("#username-input");
+    const username =
+      input.value.trim();
+
+    if (!/^[A-Za-z0-9_]{3,24}$/.test(username)) {
+      showToast(
+        "Use 3-24 letters, numbers, or underscores.",
+        "error"
+      );
+      return;
+    }
+
+    const oldUsername =
+      state.currentUsername;
+
+    if (
+      oldUsername &&
+      oldUsername.toLowerCase() === username.toLowerCase()
+    ) {
+      closeModal("username-modal");
+      return;
+    }
+
+    if (getUsernameCooldownRemaining() > 0) {
+      showToast(
+        `You can change your username again in ${formatCooldown(getUsernameCooldownRemaining())}.`,
+        "error"
+      );
+      updateUsernameCooldownText();
+      return;
+    }
+
+    state.currentUsername =
+      username;
+
+    localStorage.setItem(
+      USERNAME_STORAGE_KEY,
+      username
+    );
+
+    localStorage.setItem(
+      USERNAME_CHANGED_AT_KEY,
+      String(Date.now())
+    );
+
+    updateUsernameButton();
+
+    // Feature hook for the backend. The current server will ignore this
+    // until the matching change_username handler is added server-side.
+    if (socket.connected) {
+      socket.emit("change_username", {
+        username,
+        previousUsername: oldUsername || null
+      });
+    }
+
+    closeModal("username-modal");
+    showToast(
+      "Username changed.",
+      "success"
+    );
+
+  }
+
+  function readReputationStore() {
+
+    try {
+      return JSON.parse(
+        localStorage.getItem(
+          REPUTATION_STORAGE_KEY
+        ) || "{}"
+      ) || {};
+    } catch {
+      return {};
+    }
+
+  }
+
+  function writeReputationStore(store) {
+    localStorage.setItem(
+      REPUTATION_STORAGE_KEY,
+      JSON.stringify(store)
+    );
+  }
+
+  function reputationKey(username) {
+    return String(username || "Unknown")
+      .trim()
+      .toLowerCase();
+  }
+
+  function getReputationSummary(username) {
+
+    const store =
+      readReputationStore();
+    const entry =
+      store[reputationKey(username)] || {};
+
+    return {
+      vouches: Array.isArray(entry.vouches)
+        ? entry.vouches.length
+        : 0,
+      scams: Array.isArray(entry.scams)
+        ? entry.scams.length
+        : 0
+    };
+
+  }
+
+  function createReputationBadge(username) {
+
+    const badge =
+      document.createElement("button");
+
+    badge.type = "button";
+    badge.className =
+      "reputation-badge mt-1 text-[9px] text-stone-600 hover:text-stone-300";
+
+    const summary =
+      getReputationSummary(username);
+
+    badge.textContent =
+      `✓ ${summary.vouches}  ⚠ ${summary.scams}`;
+
+    badge.title =
+      "Open trader reputation";
+
+    badge.addEventListener("click", event => {
+      event.stopPropagation();
+      openTraderModal(username);
+    });
+
+    return badge;
+
+  }
+
+  function openTraderModal(username, orderId = null) {
+
+    state.currentTrader =
+      username || "Unknown";
+    state.currentReputationOrderId =
+      orderId || null;
+
+    $("#trader-name").textContent =
+      state.currentTrader;
+
+    const summary =
+      getReputationSummary(
+        state.currentTrader
+      );
+
+    $("#trader-vouches").textContent =
+      summary.vouches;
+    $("#trader-scams").textContent =
+      summary.scams;
+
+    $("#trader-reputation-note").textContent =
+      state.currentUsername
+        ? `You are signed in as ${state.currentUsername}.`
+        : "Set your username before leaving reputation feedback.";
+
+    if (socket.connected) {
+      socket.emit("get_reputation", {
+        username: state.currentTrader
+      });
+    }
+
+    $("#trader-modal")
+      .classList.remove("hidden");
+    $("#trader-modal")
+      .classList.add("flex");
+
+  }
+
+  function submitReputation(type) {
+
+    if (!state.currentUsername) {
+      showToast(
+        "Set your username before leaving a vouch.",
+        "error"
+      );
+      return;
+    }
+
+    if (!state.currentTrader) {
+      return;
+    }
+
+    if (state.currentUsername.toLowerCase() === state.currentTrader.toLowerCase()) {
+      showToast(
+        "You cannot vouch yourself.",
+        "error"
+      );
+      return;
+    }
+
+    const store =
+      readReputationStore();
+    const key =
+      reputationKey(state.currentTrader);
+
+    if (!store[key]) {
+      store[key] = {
+        vouches: [],
+        scams: []
+      };
+    }
+
+    const bucket =
+      type === "scam"
+        ? "scams"
+        : "vouches";
+
+    if (!Array.isArray(store[key][bucket])) {
+      store[key][bucket] = [];
+    }
+
+    const already =
+      store[key][bucket].some(
+        entry =>
+          entry.giver &&
+          entry.giver.toLowerCase() === state.currentUsername.toLowerCase() &&
+          String(entry.orderId || "") === String(state.currentReputationOrderId || "")
+      );
+
+    if (already) {
+      showToast(
+        "You have already left this reputation entry.",
+        "error"
+      );
+      return;
+    }
+
+    store[key][bucket].push({
+      giver: state.currentUsername,
+      orderId: state.currentReputationOrderId || null,
+      timestamp: Date.now()
+    });
+
+    writeReputationStore(store);
+
+    if (socket.connected) {
+      socket.emit("submit_reputation", {
+        targetUsername: state.currentTrader,
+        giverUsername: state.currentUsername,
+        type,
+        orderId: state.currentReputationOrderId || null
+      });
+    }
+
+    openTraderModal(
+      state.currentTrader,
+      state.currentReputationOrderId
+    );
+
+    showToast(
+      type === "scam"
+        ? "Scam-vouch recorded."
+        : "Vouch recorded.",
+      "success"
+    );
+
+  }
+
+  socket.on("reputation_data", data => {
+    if (!data || !data.username) {
+      return;
+    }
+
+    const store = readReputationStore();
+    store[reputationKey(data.username)] = {
+      vouches: Array.isArray(data.vouches) ? data.vouches : [],
+      scams: Array.isArray(data.scams) ? data.scams : []
+    };
+    writeReputationStore(store);
+
+    renderListings();
+
+    if (state.currentTrader && reputationKey(state.currentTrader) === reputationKey(data.username)) {
+      openTraderModal(state.currentTrader, state.currentReputationOrderId);
+    }
+  });
+
   /* =========================================================
      USER
      ========================================================= */
@@ -4327,6 +4935,13 @@
 
     state.currentUsername =
       String(username);
+
+    localStorage.setItem(
+      USERNAME_STORAGE_KEY,
+      state.currentUsername
+    );
+
+    updateUsernameButton();
 
   }
 
