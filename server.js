@@ -1658,6 +1658,14 @@ io.on("connection", socket => {
             ? "buy"
             : "sell";
 
+        // NEW: a persistent per-browser id (not tied to a real
+        // account) that lets change_username find every listing
+        // this browser created, so a rename can update them.
+        const clientId = clean(
+          payload?.clientId,
+          100
+        ) || null;
+
         if (!spawnerType) {
           if (
             typeof callback === "function"
@@ -1717,6 +1725,12 @@ io.on("connection", socket => {
           seller:
             clean(payload?.seller, 24) ||
             "Unknown",
+
+          // NEW: stored internally only - never sent back to
+          // clients via toClientOrder, since other players have no
+          // need to see it. Used purely to match this listing back
+          // to its owner on a later username change.
+          clientId,
 
           spawnerType,
 
@@ -1903,6 +1917,105 @@ io.on("connection", socket => {
         socket.leave(
           String(room)
         );
+      }
+    }
+  );
+
+  // NEW: index.html's saveUsername() emits this after a rename.
+  // We find every listing tagged with the same clientId (set when
+  // that browser created the listing via place_order) and update
+  // the displayed seller name, then broadcast the change so it
+  // shows up live for every connected player - including the
+  // person who just renamed, on their own listing.
+  socket.on(
+    "change_username",
+    (payload, callback) => {
+      try {
+        const clientId = clean(
+          payload?.clientId,
+          100
+        );
+
+        const newUsername = clean(
+          payload?.username,
+          24
+        );
+
+        if (!clientId || !newUsername) {
+          if (
+            typeof callback === "function"
+          ) {
+            callback({
+              success: false,
+              message:
+                "Missing username or client id."
+            });
+          }
+
+          return;
+        }
+
+        let updatedAny = false;
+
+        for (const listing of listings) {
+          if (
+            listing.clientId &&
+            listing.clientId === clientId
+          ) {
+            listing.seller = newUsername;
+            updatedAny = true;
+          }
+        }
+
+        if (updatedAny) {
+          saveJSON(
+            LISTINGS_FILE,
+            listings
+          );
+
+          for (const listing of listings) {
+            if (listing.clientId === clientId) {
+              io.emit(
+                "order_updated",
+                toClientOrder(listing)
+              );
+            }
+          }
+
+          io.emit(
+            "listings_updated",
+            listings
+          );
+
+          io.emit(
+            "orders",
+            listings.map(toClientOrder)
+          );
+        }
+
+        if (
+          typeof callback === "function"
+        ) {
+          callback({
+            success: true,
+            updatedListings: updatedAny
+          });
+        }
+      } catch (error) {
+        console.error(
+          "change_username failed:",
+          error
+        );
+
+        if (
+          typeof callback === "function"
+        ) {
+          callback({
+            success: false,
+            message:
+              "Server error while updating username."
+          });
+        }
       }
     }
   );
